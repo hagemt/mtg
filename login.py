@@ -16,6 +16,7 @@ def main(*args) -> int:
     """attempt GET + POST /customer_login
     (to obtain the laravel_session cookie)
     """
+
     def login(email, password, agent="Mozilla/5.0", **kwargs) -> str:
         conn = HTTP.Session(**kwargs)
         data = {}
@@ -25,7 +26,7 @@ def main(*args) -> int:
         url = "https://www.cardkingdom.com/customer_login"
         res = conn.get(url, timeout=slow, headers=head)
         res.raise_for_status()
-        #print(res.status_code, res.headers["Set-Cookie"])
+        # print(res.status_code, res.headers["Set-Cookie"])
         soup = BeautifulSoup(res.text, features="html.parser")
         for form in soup.find_all("form"):
             for item in form.find_all("input"):
@@ -36,12 +37,13 @@ def main(*args) -> int:
         data["password"] = password if len(args) < 3 else args[2]
         out = conn.post(url, timeout=slow, headers=head, data=data)
         out.raise_for_status()
-        return out.cookies['laravel_session']
+        return out.cookies["laravel_session"]
 
     try:
-        dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
+        dotenv_path = os.path.join(os.path.dirname(__file__), ".env")
         load_dotenv(dotenv_path)
-        email, *rest = os.getenv("MTG_CREDENTIALS", ":").split(":")
+        email, *rest = os.getenv("MTG_SECRET", ":").split(":")
+        email = email or safe.getpass("--- Card Kingdom email address: ")
         password = rest[0] if rest else ""
 
         prompt = f"--- Card Kingdom password for {email}: "

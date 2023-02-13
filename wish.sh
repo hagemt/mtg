@@ -15,8 +15,8 @@ function _venv {
 }
 
 function _main {
-	local -r LOG_FILE="log/mtg_$(date +%Y-%m-%dT%H_%M_%S).log"
-	env MTG_COOKIE="$(./login.py)" ./mtg.py 1>&2 > "$LOG_FILE"
+	local -r LOG_FILE="log/card_list_$(date +%Y-%m-%dT%H_%M_%S).log"
+	env MTG_COOKIE="$(./login.py)" ./mtg.py cards > "$LOG_FILE" 2>&1
 }
 
 ( cd "$MTG_HOME" ; mkdir -p log && _venv && _main "$@" )

@@ -1,3 +1,5 @@
+*.DS_Store
+*.html
 /*.env
 /*.log
 /env/*
