@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""mtg.py to list cards we want to buy
-(env MTG_CENTS=99 to lower threshold)
-USAGE: env "MTG_COOKIE=$(./mtg.py login --email ... <<< pass)" ./mtg,py cards
+"""mtg.py to list cards we want to buy from Card Kingdom
+(for example, export MTG_CENTS=99 to lower "cheap" threshold)
+USAGE: env "MTG_COOKIE=$(./mtg.py login)" ./mtg.py wishlist
 """
 # pylint: disable=missing-function-docstring
 import argparse
 import datetime as DT
-import getpass as safe
+import getpass as ask
 import json
 import os
 import sys
@@ -21,19 +21,19 @@ from dotenv import load_dotenv  # type: ignore
 # - MTG_PAGES=0   implies "page until we run out"
 # - MTG_CENTS=599 implies <6 USD is a "cheap" card
 # - MTG_LIMIT=10  implies HTTP RTT is <10s
-
 # - MTG_AGENT="..." is User-Agent header for HTTP requests
+# defaults:
+# - MTG_BASE_URL=https://www.cardkingdom.com sets the base URL
+# - MTG_CARD_FMT="" implies text/plain output (vs. csv/json)
 # - MTG_COOKIE=... for pre-existing login (laravel_session)
-# - MTG_DOMAIN=https://www.cardkingdom.com sets the base URL
-# - MTG_FORMAT="" implies text/plain output (vs. csv/json)
 # - MTG_SECRET="username@example.com" + ":" + "password"
 # see login function or details re: how cookies work
 MAX = int(os.getenv("MTG_PAGES", "0"))
 MIN = int(os.getenv("MTG_CENTS", "599"))
 SEC = float(os.getenv("MTG_LIMIT", "10"))
 
-FMT = os.getenv("MTG_FORMAT", "")  # raw log vs. csv/json
-URL = os.getenv("MTG_DOMAIN", "https://www.cardkingdom.com")
+FMT = os.getenv("MTG_CARD_FMT", "")  # raw log vs. csv/json
+URL = os.getenv("MTG_BASE_URL", "https://www.cardkingdom.com")
 # curl's default User-Agent is banned; use Firefox's:
 _UA = os.getenv(
     "MTG_AGENT",
@@ -49,9 +49,9 @@ _UA = os.getenv(
 
 
 def login(email: str, password: str, **kwargs) -> str:
-    """two requests (GET and POST) to /customer_login
-    N.B. a laravel_session is still returned even given bad credentials
-    (an empty string is returned for HTTP failures)
+    """sends two HTTP requests (GET and POST) to /customer_login
+    N.B. a cookie is always returned, even given bad credentials
+    (see ./login.py for the more sophisticated version of login)
     """
     try:
         agent = {"User-Agent": _UA}
@@ -71,17 +71,20 @@ def login(email: str, password: str, **kwargs) -> str:
 
             inputs["email"] = email
             inputs["password"] = password
-            out = conn.post(url, timeout=slow, headers=agent, data=inputs)
-            out.raise_for_status()
+            res = conn.post(url, timeout=slow, headers=agent, data=inputs)
+            res.raise_for_status()
 
-            return out.cookies["laravel_session"]
-    except HTTP.HTTPError as err:
+            return res.cookies["laravel_session"]
+    except (HTTP.ConnectionError, HTTP.HTTPError, ValueError) as err:
         print(f"--- during login: {err}", file=sys.stderr)
         return ""
 
 
 class Card(T.NamedTuple):
-    """models the Card Kingdom entity"""
+    """models an MTG entity
+
+    URL in href
+    """
 
     href: str
     name: str
@@ -119,18 +122,21 @@ class Format:
             return
         if self.writer == "json":
             return
-        print("# executed @", DT.datetime.now(), file=sys.stderr)
+        header = f"# executed @ {DT.datetime.now()}"
+        print(header, file=sys.stderr)
 
     def footer(self) -> None:
         buy = self.counts[0]
         inf = Format.money(self.counts[1])
         sup = Format.money(self.counts[2])
         mid = Format.money(self.counts[3])
-        out = f"# ${inf} for N={buy} <= ${mid}=M vs. ${sup} total"
+        footer = f"# ${inf} for N={buy} <= ${mid}=M vs. ${sup} total"
+        if self.writer == "csv":
+            return
         if self.writer == "json":
-            print(json.dumps({"//": out, "wishlist": self.visited}))
+            print(json.dumps({"//": footer, "wishlist": self.visited}))
         else:
-            print(out, file=sys.stderr)
+            print(footer, file=sys.stderr)
 
     def visit(self, card: Card) -> None:
         cost = card.usd
@@ -182,8 +188,8 @@ def dump(agent=_UA, cookies=None, pages=MAX) -> None:
         icon = "*" if stock.text.strip() == "In Stock" else "!"
         return Card(icon=icon, href=href, name=name, usd=price.text.strip())
 
-    def watch_list(max_pages: int = 10) -> T.Generator[Card, None, None]:
-        for page in range(pages if pages > 0 else max_pages):
+    def wished_for(start=0, max_pages=100) -> T.Generator[Card, None, None]:
+        for page in range(start, pages if pages > 0 else max_pages):
             url = f"{URL}/myaccount/wishlist?page={page + 1}"
             rows = fetch_soup(url).find_all("div", class_="row")
             if not rows:
@@ -192,7 +198,7 @@ def dump(agent=_UA, cookies=None, pages=MAX) -> None:
                 card = parse_soup(row)
                 yield card
 
-    cards = list(watch_list())
+    cards = list(wished_for())
     if not cards:
         raise ValueError("bad session or nothing in wishlist")
     with Format.visitor() as visit:
@@ -200,50 +206,55 @@ def dump(agent=_UA, cookies=None, pages=MAX) -> None:
             visit(card)
 
 
-def pii(desc: str) -> str:
-    return safe.getpass(prompt=f"Card Kingdom {desc}: ")
+def pii(suffix: str) -> str:
+    return ask.getpass(prompt=f"--- Card Kingdom {suffix}: ")
 
 
-def parse(secret: str, cookie: str) -> T.Tuple[str, str, str]:
-    email, *split = secret.split(":")
-    parser = argparse.ArgumentParser(description="Process some integers.")
-    parser.add_argument("action", choices=["cards", "login"])
+def parse(cookie: str, first: str, *split) -> T.Tuple[str, str, str]:
+    parser = argparse.ArgumentParser(description="Card Kingdom CLI")
+    parser.add_argument("action", choices=["login", "wishlist"])
     parser.add_argument("--email", required=False)
     args = parser.parse_args()
 
     if args.action == "login":
-        print(secret, cookie, email, args)
-        username = args.email or email or pii("email is")
+        # print(secret, cookie, email, args)
+        username = args.email or first or pii("email is")
         password = split[0] if split else pii("password")
         return args.action, username, password
     if not cookie:
         raise ValueError("missing MTG_COOKIE or MTG_SECRET for login")
-    return "cards", "", ""
+    return "wishlist", args.email or first, split[0] if split else ""
 
 
 def main(*argv) -> int:
+    first = argv[0] if argv else "./mtg.py"
+    hacks = f"{first} login"  # --email ... <<< password
+    usage = f'USAGE: env MTG_COOKIE="$({hacks})" {first} wishlist'
     load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
-    first = argv[0] if argv else "mtg.py"
-    usage = f'USAGE: env MTG_COOKIE="$(./{first} login)" ./{first}'
     cookie = os.getenv("MTG_COOKIE", "")  # previous login
-    secret = os.getenv("MTG_SECRET", ":")
+    secret = os.getenv("MTG_SECRET", ":").split(":")
+
     try:
-        action, email, password = parse(secret, cookie)
+        action, email, password = parse(cookie, *secret)
+        # print("---", action, email, cookie)  # secret has password
     except ValueError as err:
         print(f"--- {err}; {usage}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
+        print("set MTG_COOKIE (or MTG_SECRET for login)", file=sys.stderr)
         return 1
+
     if action == "login":
         print(login(email, password))
         return 0
-    if action != "cards":
+    if action != "wishlist":
         print(usage, file=sys.stderr)
         return 1
+
     try:
         session_cookie = cookie or login(email, password)
         dump(cookies=[f"laravel_session={session_cookie}"])
-    except (HTTP.ConnectionError, ValueError) as err:
+    except (HTTP.ConnectionError, HTTP.HTTPError, ValueError) as err:
         print(f"--- CK wishlist failure: {err}", file=sys.stderr)
         return 1
     return 0
