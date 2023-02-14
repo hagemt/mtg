@@ -15,7 +15,7 @@ function _venv {
 }
 
 function _main {
-	local -r LOG_FILE="log/mtg_wishlist_$(date +%Y-%m-%dT%H_%M_%S).log"
+	local -r LOG_FILE="log/mtg_wishlist_$(date +%Y_%m_%dT%H_%M_%S).log"
 	env MTG_COOKIE="$(./login.py)" ./mtg.py wishlist > "$LOG_FILE" 2>&1
 }
 
